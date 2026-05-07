@@ -1,0 +1,324 @@
+"""
+Sortly - File Sorter Backend
+Communicates with the Tauri frontend via JSON over stdout/stdin.
+"""
+
+import sys
+import json
+import os
+import shutil
+import datetime
+from pathlib import Path
+
+UNDO_LOG = Path.home() / ".sortly_undo.json"
+
+CATEGORIES = [
+    "Images",
+    "PDFs",
+    "Documents",
+    "Spreadsheets",
+    "Presentations",
+    "Videos",
+    "Audio",
+    "Archives",
+    "Code",
+    "Folders",
+    "Other",
+]
+
+SORTLY_OUTPUT_FOLDERS = set(CATEGORIES + ["_unsorted"])
+
+EXTENSION_CATEGORY_MAP = {
+    # Images
+    "jpg": "Images",
+    "jpeg": "Images",
+    "png": "Images",
+    "gif": "Images",
+    "webp": "Images",
+    "bmp": "Images",
+    "tiff": "Images",
+    "heic": "Images",
+    "svg": "Images",
+
+    # PDFs
+    "pdf": "PDFs",
+
+    # Documents
+    "doc": "Documents",
+    "docx": "Documents",
+    "txt": "Documents",
+    "rtf": "Documents",
+    "md": "Documents",
+    "odt": "Documents",
+
+    # Spreadsheets
+    "xls": "Spreadsheets",
+    "xlsx": "Spreadsheets",
+    "csv": "Spreadsheets",
+    "ods": "Spreadsheets",
+
+    # Presentations
+    "ppt": "Presentations",
+    "pptx": "Presentations",
+    "odp": "Presentations",
+
+    # Videos
+    "mp4": "Videos",
+    "mov": "Videos",
+    "avi": "Videos",
+    "mkv": "Videos",
+    "webm": "Videos",
+    "wmv": "Videos",
+
+    # Audio
+    "mp3": "Audio",
+    "wav": "Audio",
+    "aac": "Audio",
+    "flac": "Audio",
+    "m4a": "Audio",
+    "ogg": "Audio",
+
+    # Archives
+    "zip": "Archives",
+    "rar": "Archives",
+    "7z": "Archives",
+    "tar": "Archives",
+    "gz": "Archives",
+
+    # Code
+    "py": "Code",
+    "js": "Code",
+    "jsx": "Code",
+    "ts": "Code",
+    "tsx": "Code",
+    "html": "Code",
+    "css": "Code",
+    "json": "Code",
+    "xml": "Code",
+    "rs": "Code",
+    "java": "Code",
+    "cpp": "Code",
+    "c": "Code",
+    "cs": "Code",
+    "php": "Code",
+    "go": "Code",
+    "rb": "Code",
+    "sql": "Code",
+    "sh": "Code",
+    "bat": "Code",
+    "ps1": "Code",
+}
+
+def emit(event: str, data: dict):
+    """Send a JSON event to the Tauri frontend via stdout."""
+    payload = json.dumps({"event": event, "data": data})
+    print(payload, flush=True)
+
+def is_sortable_item(root_folder: Path, name: str) -> bool:
+    path = root_folder / name
+
+    # Skip Sortly-created category folders.
+    if path.is_dir() and name in SORTLY_OUTPUT_FOLDERS:
+        return False
+
+    # Skip hidden/system-ish files.
+    if name.startswith("."):
+        return False
+
+    return path.is_file() or path.is_dir()
+
+def classify_by_file_type(path, item_type):
+    if item_type == "folder":
+        return {
+            "category": "Folders",
+            "confidence": 100,
+        }
+
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    category = EXTENSION_CATEGORY_MAP.get(ext, "Other")
+
+    return {
+        "category": category,
+        "confidence": 100 if category != "Other" else 60,
+    }
+
+def scan_folder(folder: str):
+    """Scan a folder and classify all top-level files and folders."""
+    root = Path(folder)
+    if not root.exists() or not root.is_dir():
+        emit("error", {"message": f"Folder not found: {folder}"})
+        return
+
+    items = []
+    for name in os.listdir(root):
+        path = root / name
+        if not is_sortable_item(root, name):
+            continue
+        items.append(path)
+
+    total = len(items)
+    emit("scan_start", {"total": total, "folder": str(root)})
+
+    results = []
+    for i, item_path in enumerate(items):
+        try:
+            if item_path.is_dir():
+                ext = "folder"
+                item_type = "folder"
+            else:
+                ext = item_path.suffix.lstrip(".").lower()
+                item_type = "file"
+
+            classification = classify_by_file_type(str(item_path), item_type)
+            category = classification["category"]
+            confidence = classification["confidence"]
+            result = {
+                "id": i,
+                "name": item_path.name,
+                "path": str(item_path),
+                "category": category,
+                "confidence": confidence,
+                "size": format_size(get_size(item_path)),
+                "ext": ext,
+                "type": item_type,
+            }
+            results.append(result)
+            emit("file_classified", {
+                "file": result,
+                "progress": round((i + 1) / total * 100),
+            })
+        except Exception as e:
+            emit("file_error", {"name": item_path.name, "error": str(e)})
+
+    emit("scan_complete", {"files": results})
+
+def apply_moves(folder: str, approved_ids: list[int], files: list[dict]):
+    """Move approved files into category subfolders."""
+    root = Path(folder)
+    undo_entries = []
+    moved = 0
+    errors = []
+
+    approved_set = set(approved_ids)
+    approved_files = [f for f in files if f["id"] in approved_set]
+
+    for file_info in approved_files:
+        src = Path(file_info["path"])
+        cat = file_info["category"]
+        dest_dir = root / cat
+        dest_dir.mkdir(exist_ok=True)
+        dest = dest_dir / src.name
+
+        # Handle name collision
+        if dest.exists():
+            stem = src.stem
+            suffix = src.suffix
+            counter = 1
+            while dest.exists():
+                dest = dest_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        try:
+            source_abs = os.path.abspath(src)
+            dest_abs = os.path.abspath(dest)
+
+            if os.path.isdir(source_abs):
+                common = os.path.commonpath([source_abs, dest_abs])
+                if common == source_abs:
+                    errors.append({
+                        "name": file_info["name"],
+                        "error": "Cannot move a folder into itself or one of its own subfolders."
+                    })
+                    continue
+
+            shutil.move(str(src), str(dest))
+            undo_entries.append({"from": str(dest), "to": str(src)})
+            moved += 1
+            emit("file_moved", {"name": src.name, "destination": str(dest)})
+        except Exception as e:
+            errors.append({"name": src.name, "error": str(e)})
+            emit("move_error", {"name": src.name, "error": str(e)})
+
+    try:
+        log = []
+        if UNDO_LOG.exists():
+            try:
+                log = json.loads(UNDO_LOG.read_text())
+            except Exception:
+                log = []
+        log.append({
+            "timestamp": datetime.datetime.now().isoformat(),
+            "moves": undo_entries,
+        })
+        UNDO_LOG.write_text(json.dumps(log, indent=2))
+    except Exception as e:
+        errors.append({
+            "name": "Undo log",
+            "error": f"Moves completed, but undo history could not be saved: {e}",
+        })
+
+    emit("moves_complete", {"moved": moved, "errors": errors})
+
+def undo_last():
+    """Reverse the last batch of moves."""
+    if not UNDO_LOG.exists():
+        emit("error", {"message": "No undo history found."})
+        return
+    try:
+        log = json.loads(UNDO_LOG.read_text())
+        if not log:
+            emit("error", {"message": "Undo log is empty."})
+            return
+        last = log.pop()
+        restored = 0
+        for entry in last["moves"]:
+            src = Path(entry["from"])
+            dst = Path(entry["to"])
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                restored += 1
+        UNDO_LOG.write_text(json.dumps(log, indent=2))
+        emit("undo_complete", {"restored": restored})
+    except Exception as e:
+        emit("error", {"message": f"Undo failed: {e}"})
+
+def get_size(path: Path):
+    if path.is_dir():
+        return "Folder"
+    return path.stat().st_size
+
+def format_size(size: int) -> str:
+    if isinstance(size, str):
+        return size
+
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+def main():
+    """Read JSON commands from stdin, dispatch to handlers."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            cmd = json.loads(line)
+            action = cmd.get("action")
+            if action == "scan":
+                scan_folder(cmd["folder"])
+            elif action == "apply":
+                apply_moves(cmd["folder"], cmd["approved_ids"], cmd["files"])
+            elif action == "undo":
+                undo_last()
+            else:
+                emit("error", {"message": f"Unknown action: {action}"})
+        except json.JSONDecodeError as e:
+            emit("error", {"message": f"Invalid JSON command: {e}"})
+        except Exception as e:
+            emit("error", {"message": str(e)})
+
+if __name__ == "__main__":
+    main()
