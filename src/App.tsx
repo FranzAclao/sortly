@@ -35,10 +35,16 @@ type Status = "idle" | "scanning" | "review" | "applying" | "done";
 type Decision = "approved" | "rejected" | null;
 type CategoryFilter = "All" | Category;
 type MoveError = { name: string; error: string };
-type View = "organize" | "settings";
+type View = "organize" | "history" | "settings";
 type DefaultAction = "ask" | "auto";
 type SortingMode = "files" | "filesAndFolders";
 type UnknownFilesMode = "other" | "unsorted";
+type SortHistoryEntry = {
+  id: number;
+  timestamp: string;
+  folder: string;
+  moved: number;
+};
 
 interface SortlySettings {
   defaultAction: DefaultAction;
@@ -139,6 +145,7 @@ export default function App() {
   const [activeFilter, setActiveFilter] = useState<CategoryFilter>("All");
   const [movedCount, setMovedCount] = useState(0);
   const [moveErrors, setMoveErrors] = useState<MoveError[]>([]);
+  const [historyEntries, setHistoryEntries] = useState<SortHistoryEntry[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const expectedMoveCount = useRef(0);
   const settingsRef = useRef(settings);
@@ -228,6 +235,7 @@ export default function App() {
         setMoveErrors(payload.errors ?? []);
         setStatus("done");
         showToast(`${payload.moved} items moved successfully`);
+        void loadSortHistory();
       }));
 
       track(await listen("undo_complete", (event) => {
@@ -243,6 +251,23 @@ export default function App() {
         setMovedCount(0);
         setMoveErrors([]);
         setProgress(0);
+        void loadSortHistory();
+      }));
+
+      track(await listen("history_loaded", (event) => {
+        const payload = event.payload as {
+          entries: SortHistoryEntry[];
+        };
+
+        setHistoryEntries(payload.entries);
+      }));
+
+      track(await listen("history_restored", (event) => {
+        const payload = event.payload as {
+          restored: number;
+        };
+
+        showToast(`${payload.restored} items restored`);
       }));
 
       track(await listen("error", (event) => {
@@ -270,6 +295,19 @@ export default function App() {
   const pickFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
     if (selected) setFolder(selected as string);
+  };
+
+  const loadSortHistory = async () => {
+    try {
+      await invoke("get_sort_history");
+    } catch (e: any) {
+      showToast(`Error: ${e}`);
+    }
+  };
+
+  const openHistory = () => {
+    setView("history");
+    void loadSortHistory();
   };
 
   const startScan = async () => {
@@ -352,6 +390,14 @@ export default function App() {
     }
   };
 
+  const restoreHistoryEntry = async (entry: SortHistoryEntry) => {
+    try {
+      await invoke("restore_sort_history", { index: entry.id });
+    } catch (e: any) {
+      showToast(`Error: ${e}`);
+    }
+  };
+
   const resetForNewFolder = () => {
     setView("organize");
     setFolder("");
@@ -394,6 +440,12 @@ export default function App() {
           className={view === "organize" ? "top-nav-active" : ""}
         >
           Organize
+        </button>
+        <button
+          onClick={openHistory}
+          className={view === "history" ? "top-nav-active" : ""}
+        >
+          History
         </button>
         <button
           onClick={() => setView("settings")}
@@ -511,6 +563,7 @@ export default function App() {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>
                 {view === "settings" && "Settings"}
+                {view === "history" && "Sort History"}
                 {view === "organize" && status === "idle" && "Pick a folder to get started"}
                 {view === "organize" && status === "scanning" && `Scanning… ${files.length} of ${scanTotal} items`}
                 {view === "organize" && status === "review" && "Review Items"}
@@ -536,6 +589,14 @@ export default function App() {
               <SettingsPage
                 settings={settings}
                 onChange={setSettings}
+              />
+            )}
+
+            {view === "history" && (
+              <HistoryPage
+                entries={historyEntries}
+                onRefresh={loadSortHistory}
+                onRestore={restoreHistoryEntry}
               />
             )}
 
@@ -922,6 +983,65 @@ function SettingsPage({
       </SettingGroup>
     </section>
   );
+}
+
+function HistoryPage({
+  entries,
+  onRefresh,
+  onRestore,
+}: {
+  entries: SortHistoryEntry[];
+  onRefresh: () => void;
+  onRestore: (entry: SortHistoryEntry) => void;
+}) {
+  return (
+    <section className="history-panel">
+      <div className="history-header">
+        <div>
+          <h2>Sort History</h2>
+          <p>Restore any previous sort batch.</p>
+        </div>
+        <button onClick={onRefresh}>Refresh</button>
+      </div>
+
+      {entries.length === 0 ? (
+        <div className="empty-state">
+          <div>No sort history yet</div>
+          <p>Completed sorts will appear here after you apply moves.</p>
+        </div>
+      ) : (
+        <div className="history-list">
+          {entries.map((entry) => (
+            <div className="history-row" key={entry.id}>
+              <div className="history-row-main">
+                <div className="history-date">{formatHistoryDate(entry.timestamp)}</div>
+                <div className="history-folder">{entry.folder || "Unknown folder"}</div>
+                <div className="history-count">{entry.moved} items moved</div>
+              </div>
+              <button onClick={() => onRestore(entry)}>Restore</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatHistoryDate(timestamp: string) {
+  if (!timestamp) return "Unknown date";
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function SettingGroup({
