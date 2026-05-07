@@ -133,11 +133,27 @@ fn send_command(state: &State<PythonProcess>, _app: &AppHandle, cmd: Value) -> R
     Err("Python process not running".into())
 }
 
+#[cfg(windows)]
+fn python_command() -> Command {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = Command::new("python");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn python_command() -> Command {
+    Command::new("python")
+}
+
 fn spawn_python(app: AppHandle) -> Child {
     // In dev: run python directly. In production: use bundled sidecar.
     let python_script = app.path().resource_dir().unwrap().join("python/sorter.py");
 
-    let child = Command::new("python")
+    let child = python_command()
         .arg(&python_script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

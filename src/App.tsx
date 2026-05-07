@@ -139,6 +139,8 @@ const CAT_ICONS: Record<Category, string> = {
   _unsorted: "📥",
 };
 
+const PREVIEW_DISPLAY_LIMIT = 100;
+
 // ── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -155,6 +157,7 @@ export default function App() {
   const [moveErrors, setMoveErrors] = useState<MoveError[]>([]);
   const [movePreviews, setMovePreviews] = useState<MovePreview[]>([]);
   const [showMovePreview, setShowMovePreview] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [historyEntries, setHistoryEntries] = useState<SortHistoryEntry[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const expectedMoveCount = useRef(0);
@@ -245,6 +248,7 @@ export default function App() {
         setMoveErrors(payload.errors ?? []);
         setMovePreviews([]);
         setShowMovePreview(false);
+        setPreviewLoading(false);
         setStatus("done");
         showToast(`${payload.moved} items moved successfully`);
         void loadSortHistory();
@@ -280,6 +284,7 @@ export default function App() {
         };
 
         setMovePreviews(payload.previews);
+        setPreviewLoading(false);
         setShowMovePreview(payload.previews.length > 0);
         if (payload.previews.length === 0) {
           showToast("No approved items to move");
@@ -407,11 +412,20 @@ export default function App() {
   const previewMoves = async () => {
     const approvedIds = getApprovedIds();
 
-    if (!folder || approvedIds.length === 0) return;
+    if (!folder || approvedIds.length === 0) {
+      showToast("No approved items to move.");
+      return;
+    }
+
+    setShowMovePreview(true);
+    setPreviewLoading(true);
+    setMovePreviews([]);
 
     try {
       await invoke("preview_moves", { folder, approvedIds, files });
     } catch (e: any) {
+      setPreviewLoading(false);
+      setShowMovePreview(false);
       showToast(`Error: ${e}`);
     }
   };
@@ -425,6 +439,7 @@ export default function App() {
     setStatus("applying");
     setMovedCount(0);
     setMoveErrors([]);
+    setPreviewLoading(false);
     setShowMovePreview(false);
 
     try {
@@ -463,6 +478,7 @@ export default function App() {
     setMoveErrors([]);
     setMovePreviews([]);
     setShowMovePreview(false);
+    setPreviewLoading(false);
     expectedMoveCount.current = 0;
     setActiveFilter("All");
     setStatus("idle");
@@ -804,6 +820,7 @@ export default function App() {
       {showMovePreview && (
         <MovePreviewDialog
           previews={movePreviews}
+          loading={previewLoading}
           onCancel={() => setShowMovePreview(false)}
           onConfirm={applyMoves}
         />
@@ -912,43 +929,94 @@ function FileRow({
 
 function MovePreviewDialog({
   previews,
+  loading,
   onCancel,
   onConfirm,
 }: {
   previews: MovePreview[];
+  loading: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const visiblePreviewItems = previews.slice(0, PREVIEW_DISPLAY_LIMIT);
+  const hiddenPreviewCount = Math.max(0, previews.length - PREVIEW_DISPLAY_LIMIT);
+  const previewCategoryCounts = previews.reduce<Record<string, number>>(
+    (acc, item) => {
+      acc[item.category] = (acc[item.category] ?? 0) + 1;
+      return acc;
+    },
+    {}
+  );
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="move-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="move-preview-title">
         <div className="move-preview-header">
           <div>
             <h2 id="move-preview-title">Confirm Moves</h2>
-            <p>{previews.length} items will be moved.</p>
+            <p>
+              {loading
+                ? "Preparing move preview..."
+                : `${previews.length} items will be moved.`}
+            </p>
           </div>
           <button onClick={onCancel}>Cancel</button>
         </div>
 
-        <div className="move-preview-list">
-          {previews.map((preview) => (
-            <div className="move-preview-row" key={`${preview.id}-${preview.to}`}>
-              <div className="move-preview-name">{preview.name}</div>
-              <div className="move-preview-path">
-                <span>From:</span>
-                <code>{preview.from}</code>
-              </div>
-              <div className="move-preview-path">
-                <span>To:</span>
-                <code>{preview.to}</code>
-              </div>
+        <div className="modal-body">
+          {loading ? (
+            <div className="modal-loading">
+              Preparing move preview...
             </div>
-          ))}
+          ) : (
+            <>
+              <p className="modal-summary">
+                {previews.length} items will be moved.
+              </p>
+
+              <div className="preview-summary-grid">
+                {Object.entries(previewCategoryCounts).map(([category, count]) => (
+                  <div className="preview-summary-card" key={category}>
+                    <span>{category}</span>
+                    <strong>{count}</strong>
+                  </div>
+                ))}
+              </div>
+
+              {hiddenPreviewCount > 0 && (
+                <p className="modal-note">
+                  Showing the first {PREVIEW_DISPLAY_LIMIT} items. {hiddenPreviewCount} more items will also be moved.
+                </p>
+              )}
+
+              <div className="move-preview-list">
+                {visiblePreviewItems.map((preview) => (
+                  <div className="move-preview-row" key={`${preview.from}-${preview.to}`}>
+                    <div className="move-preview-name">{preview.name}</div>
+                    <div className="move-preview-path">
+                      <span>From:</span>
+                      <code>{preview.from}</code>
+                    </div>
+                    <div className="move-preview-path">
+                      <span>To:</span>
+                      <code>{preview.to}</code>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="move-preview-footer">
           <button onClick={onCancel}>Back to review</button>
-          <button className="primary" onClick={onConfirm}>Move items</button>
+          <button
+            className="primary"
+            disabled={loading || previews.length === 0}
+            onClick={onConfirm}
+          >
+            Move {previews.length} items
+          </button>
         </div>
       </section>
     </div>
