@@ -115,8 +115,13 @@ def emit(event: str, data: dict):
     payload = json.dumps({"event": event, "data": data})
     print(payload, flush=True)
 
-def get_unique_destination(path: Path) -> Path:
-    if not path.exists():
+def get_unique_destination(path: Path, reserved=None) -> Path:
+    if reserved is None:
+        reserved = set()
+
+    normalized = os.path.normcase(os.path.abspath(path))
+    if not path.exists() and normalized not in reserved:
+        reserved.add(normalized)
         return path
 
     parent = path.parent
@@ -126,7 +131,9 @@ def get_unique_destination(path: Path) -> Path:
 
     while True:
         candidate = parent / f"{stem} ({counter}){suffix}"
-        if not candidate.exists():
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if not candidate.exists() and normalized not in reserved:
+            reserved.add(normalized)
             return candidate
         counter += 1
 
@@ -261,6 +268,35 @@ def scan_folder(folder: str, include_folders: bool = True, unknown_target: str =
 
     emit("scan_complete", {"files": results})
 
+def build_move_previews(folder: str, approved_ids: list[int], files: list[dict]):
+    root = Path(folder)
+    approved_set = set(approved_ids)
+    approved_files = [f for f in files if f["id"] in approved_set]
+    previews = []
+    reserved = set()
+
+    for file_info in approved_files:
+        src = Path(file_info["path"])
+        cat = file_info["category"]
+        dest_dir = root / cat
+        dest = get_unique_destination(dest_dir / src.name, reserved)
+
+        previews.append({
+            "id": file_info["id"],
+            "name": file_info["name"],
+            "category": cat,
+            "from": str(src),
+            "to": str(dest),
+            "type": file_info.get("type", "file"),
+        })
+
+    return previews
+
+def preview_moves(folder: str, approved_ids: list[int], files: list[dict]):
+    emit("move_preview", {
+        "previews": build_move_previews(folder, approved_ids, files),
+    })
+
 def apply_moves(folder: str, approved_ids: list[int], files: list[dict]):
     """Move approved files into category subfolders."""
     root = Path(folder)
@@ -270,13 +306,14 @@ def apply_moves(folder: str, approved_ids: list[int], files: list[dict]):
 
     approved_set = set(approved_ids)
     approved_files = [f for f in files if f["id"] in approved_set]
+    reserved = set()
 
     for file_info in approved_files:
         src = Path(file_info["path"])
         cat = file_info["category"]
         dest_dir = root / cat
         dest_dir.mkdir(exist_ok=True)
-        dest = get_unique_destination(dest_dir / src.name)
+        dest = get_unique_destination(dest_dir / src.name, reserved)
 
         try:
             source_abs = os.path.abspath(src)
@@ -395,6 +432,8 @@ def main():
                 )
             elif action == "apply":
                 apply_moves(cmd["folder"], cmd["approved_ids"], cmd["files"])
+            elif action == "preview":
+                preview_moves(cmd["folder"], cmd["approved_ids"], cmd["files"])
             elif action == "undo":
                 undo_last()
             elif action == "history":

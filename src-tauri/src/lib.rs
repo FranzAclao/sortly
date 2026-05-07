@@ -54,6 +54,26 @@ fn apply_moves(
 }
 
 #[tauri::command]
+fn preview_moves(
+    folder: String,
+    approved_ids: Vec<u32>,
+    files: Value,
+    app: AppHandle,
+    state: State<PythonProcess>,
+) -> Result<(), String> {
+    send_command(
+        &state,
+        &app,
+        serde_json::json!({
+            "action": "preview",
+            "folder": folder,
+            "approved_ids": approved_ids,
+            "files": files,
+        }),
+    )
+}
+
+#[tauri::command]
 fn undo_last(app: AppHandle, state: State<PythonProcess>) -> Result<(), String> {
     send_command(&state, &app, serde_json::json!({"action": "undo"}))
 }
@@ -77,6 +97,28 @@ fn restore_sort_history(
             "index": index,
         }),
     )
+}
+
+#[tauri::command]
+fn open_in_explorer(folder: String) -> Result<(), String> {
+    if !std::path::Path::new(&folder).exists() {
+        return Err("Folder does not exist anymore.".into());
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&folder)
+            .spawn()
+            .map_err(|e| format!("Failed to open File Explorer: {}", e))?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        return Err("Open in File Explorer is only supported on Windows.".into());
+    }
+
+    Ok(())
 }
 
 fn send_command(state: &State<PythonProcess>, _app: &AppHandle, cmd: Value) -> Result<(), String> {
@@ -127,9 +169,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             apply_moves,
+            preview_moves,
             undo_last,
             get_sort_history,
             restore_sort_history,
+            open_in_explorer,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
