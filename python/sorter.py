@@ -24,6 +24,7 @@ CATEGORIES = [
     "Code",
     "Folders",
     "Other",
+    "_unsorted",
 ]
 
 SORTLY_OUTPUT_FOLDERS = set(CATEGORIES + ["_unsorted"])
@@ -114,7 +115,7 @@ def emit(event: str, data: dict):
     payload = json.dumps({"event": event, "data": data})
     print(payload, flush=True)
 
-def is_sortable_item(root_folder: Path, name: str) -> bool:
+def is_sortable_item(root_folder: Path, name: str, include_folders: bool) -> bool:
     path = root_folder / name
 
     # Skip Sortly-created category folders.
@@ -125,9 +126,9 @@ def is_sortable_item(root_folder: Path, name: str) -> bool:
     if name.startswith("."):
         return False
 
-    return path.is_file() or path.is_dir()
+    return path.is_file() or (include_folders and path.is_dir())
 
-def classify_by_file_type(path, item_type):
+def classify_by_file_type(path, item_type, unknown_target="Other"):
     if item_type == "folder":
         return {
             "category": "Folders",
@@ -135,24 +136,27 @@ def classify_by_file_type(path, item_type):
         }
 
     ext = os.path.splitext(path)[1].lstrip(".").lower()
-    category = EXTENSION_CATEGORY_MAP.get(ext, "Other")
+    category = EXTENSION_CATEGORY_MAP.get(ext, unknown_target)
 
     return {
         "category": category,
-        "confidence": 100 if category != "Other" else 60,
+        "confidence": 100 if category not in {"Other", "_unsorted"} else 60,
     }
 
-def scan_folder(folder: str):
+def scan_folder(folder: str, include_folders: bool = True, unknown_target: str = "Other"):
     """Scan a folder and classify all top-level files and folders."""
     root = Path(folder)
     if not root.exists() or not root.is_dir():
         emit("error", {"message": f"Folder not found: {folder}"})
         return
 
+    if unknown_target not in {"Other", "_unsorted"}:
+        unknown_target = "Other"
+
     items = []
     for name in os.listdir(root):
         path = root / name
-        if not is_sortable_item(root, name):
+        if not is_sortable_item(root, name, include_folders):
             continue
         items.append(path)
 
@@ -169,7 +173,7 @@ def scan_folder(folder: str):
                 ext = item_path.suffix.lstrip(".").lower()
                 item_type = "file"
 
-            classification = classify_by_file_type(str(item_path), item_type)
+            classification = classify_by_file_type(str(item_path), item_type, unknown_target)
             category = classification["category"]
             confidence = classification["confidence"]
             result = {
@@ -308,7 +312,11 @@ def main():
             cmd = json.loads(line)
             action = cmd.get("action")
             if action == "scan":
-                scan_folder(cmd["folder"])
+                scan_folder(
+                    cmd["folder"],
+                    bool(cmd.get("include_folders", True)),
+                    cmd.get("unknown_target", "Other"),
+                )
             elif action == "apply":
                 apply_moves(cmd["folder"], cmd["approved_ids"], cmd["files"])
             elif action == "undo":

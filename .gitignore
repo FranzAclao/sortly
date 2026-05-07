@@ -36,3 +36,5 @@ Thumbs.db
 # Tauri generated artifacts
 src-tauri/gen/
 
+# Backup files
+*.bak

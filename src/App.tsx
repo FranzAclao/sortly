@@ -17,7 +17,8 @@ type Category =
   | "Archives"
   | "Code"
   | "Folders"
-  | "Other";
+  | "Other"
+  | "_unsorted";
 
 interface FileResult {
   id: number;
@@ -34,6 +35,16 @@ type Status = "idle" | "scanning" | "review" | "applying" | "done";
 type Decision = "approved" | "rejected" | null;
 type CategoryFilter = "All" | Category;
 type MoveError = { name: string; error: string };
+type View = "organize" | "settings";
+type DefaultAction = "ask" | "auto";
+type SortingMode = "files" | "filesAndFolders";
+type UnknownFilesMode = "other" | "unsorted";
+
+interface SortlySettings {
+  defaultAction: DefaultAction;
+  sortingMode: SortingMode;
+  unknownFiles: UnknownFilesMode;
+}
 
 function dedupeFiles(files: FileResult[]) {
   const seen = new Map<string, FileResult>();
@@ -44,6 +55,26 @@ function dedupeFiles(files: FileResult[]) {
   }
 
   return Array.from(seen.values());
+}
+
+const DEFAULT_SETTINGS: SortlySettings = {
+  defaultAction: "ask",
+  sortingMode: "filesAndFolders",
+  unknownFiles: "other",
+};
+
+function loadSettings(): SortlySettings {
+  try {
+    const saved = window.localStorage.getItem("sortly-settings");
+    if (!saved) return DEFAULT_SETTINGS;
+
+    return {
+      ...DEFAULT_SETTINGS,
+      ...JSON.parse(saved),
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -61,6 +92,7 @@ const CATEGORIES = [
   "Code",
   "Folders",
   "Other",
+  "_unsorted",
 ] as const;
 
 const CAT_COLORS: Record<Category, { bg: string; text: string }> = {
@@ -75,6 +107,7 @@ const CAT_COLORS: Record<Category, { bg: string; text: string }> = {
   Code: { bg: "#F1EFE8", text: "#444441" },
   Folders: { bg: "#FFF7D6", text: "#6B4E00" },
   Other: { bg: "#F1EFE8", text: "#5F5E5A" },
+  _unsorted: { bg: "#F8FAFC", text: "#475569" },
 };
 
 const CAT_ICONS: Record<Category, string> = {
@@ -89,11 +122,14 @@ const CAT_ICONS: Record<Category, string> = {
   Code: "💻",
   Folders: "📁",
   Other: "📄",
+  _unsorted: "📥",
 };
 
 // ── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [view, setView] = useState<View>("organize");
+  const [settings, setSettings] = useState<SortlySettings>(() => loadSettings());
   const [folder, setFolder] = useState<string>("");
   const [status, setStatus] = useState<Status>("idle");
   const [files, setFiles] = useState<FileResult[]>([]);
@@ -105,6 +141,12 @@ export default function App() {
   const [moveErrors, setMoveErrors] = useState<MoveError[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const expectedMoveCount = useRef(0);
+  const settingsRef = useRef(settings);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+    window.localStorage.setItem("sortly-settings", JSON.stringify(settings));
+  }, [settings]);
 
   // Listen to Python events
   useEffect(() => {
@@ -153,8 +195,16 @@ export default function App() {
         const payload = event.payload as {
           files: FileResult[];
         };
+        const nextFiles = dedupeFiles(payload.files);
 
-        setFiles(dedupeFiles(payload.files));
+        setFiles(nextFiles);
+        if (settingsRef.current.defaultAction === "auto") {
+          const nextDecisions: Record<number, Decision> = {};
+          for (const file of nextFiles) {
+            nextDecisions[file.id] = "approved";
+          }
+          setDecisions(nextDecisions);
+        }
         setStatus("review");
         setProgress(100);
       }));
@@ -224,10 +274,15 @@ export default function App() {
 
   const startScan = async () => {
     if (!folder) return;
+    setView("organize");
     setStatus("scanning");
     setActiveFilter("All");
     try {
-      await invoke("scan_folder", { folder });
+      await invoke("scan_folder", {
+        folder,
+        includeFolders: settings.sortingMode === "filesAndFolders",
+        unknownTarget: settings.unknownFiles === "unsorted" ? "_unsorted" : "Other",
+      });
     } catch (e: any) {
       showToast(`Error: ${e}`);
       setStatus("idle");
@@ -256,6 +311,16 @@ export default function App() {
 
       return next;
     });
+  };
+
+  const updateFileCategory = (id: number, category: Category) => {
+    setFiles((prev) =>
+      prev.map((file) =>
+        file.id === id
+          ? { ...file, category }
+          : file
+      )
+    );
   };
 
   const applyMoves = async () => {
@@ -288,6 +353,7 @@ export default function App() {
   };
 
   const resetForNewFolder = () => {
+    setView("organize");
     setFolder("");
     setFiles([]);
     setDecisions({});
@@ -323,6 +389,18 @@ export default function App() {
         }}>
         <span style={{ fontSize: 16, fontWeight: 600 }}>🗂 Sortly</span>
         <span style={{ flex: 1 }} />
+        <button
+          onClick={() => setView("organize")}
+          className={view === "organize" ? "top-nav-active" : ""}
+        >
+          Organize
+        </button>
+        <button
+          onClick={() => setView("settings")}
+          className={view === "settings" ? "top-nav-active" : ""}
+        >
+          Settings
+        </button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", overflow: "hidden" }}>
@@ -432,14 +510,15 @@ export default function App() {
           }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 600 }}>
-                {status === "idle" && "Pick a folder to get started"}
-                {status === "scanning" && `Scanning… ${files.length} of ${scanTotal} items`}
-                {status === "review" && "Review Items"}
-                {status === "applying" && `Moving items… ${movedCount} done`}
-                {status === "done" && "Sorted Successfully"}
+                {view === "settings" && "Settings"}
+                {view === "organize" && status === "idle" && "Pick a folder to get started"}
+                {view === "organize" && status === "scanning" && `Scanning… ${files.length} of ${scanTotal} items`}
+                {view === "organize" && status === "review" && "Review Items"}
+                {view === "organize" && status === "applying" && `Moving items… ${movedCount} done`}
+                {view === "organize" && status === "done" && "Sorted Successfully"}
               </div>
               <div style={{ fontSize: 12, color: "var(--text-3)" }}>
-                {status === "scanning" && `${progress}% complete`}
+                {view === "organize" && status === "scanning" && `${progress}% complete`}
               </div>
             </div>
           </div>
@@ -453,8 +532,14 @@ export default function App() {
 
           {/* File list */}
           <div style={{ flex: 1, overflowY: "auto", padding: "14px 20px" }}>
+            {view === "settings" && (
+              <SettingsPage
+                settings={settings}
+                onChange={setSettings}
+              />
+            )}
 
-            {status === "idle" && (
+            {view === "organize" && status === "idle" && (
               <div style={{ textAlign: "center", marginTop: 80, color: "var(--text-3)" }}>
                 <div style={{ fontSize: 48, marginBottom: 16 }}>🗂️</div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>Ready to organize</div>
@@ -462,7 +547,7 @@ export default function App() {
               </div>
             )}
 
-            {(status === "review" || status === "applying" || status === "done") && (
+            {view === "organize" && (status === "review" || status === "applying" || status === "done") && (
               <section className="review-panel">
                 {status === "done" ? (
                   <div className="done-banner">
@@ -522,6 +607,7 @@ export default function App() {
                       file={file}
                       decision={decisions[file.id]}
                       status={status}
+                      onCategoryChange={(category) => updateFileCategory(file.id, category)}
                       onApprove={() =>
                         setDecisions((prev) => ({
                           ...prev,
@@ -540,7 +626,7 @@ export default function App() {
               </section>
             )}
 
-            {status === "scanning" && files.length > 0 && (
+            {view === "organize" && status === "scanning" && files.length > 0 && (
               <div className="file-list">
                 {visibleFiles.map((file) => (
                   <FileRow
@@ -548,6 +634,7 @@ export default function App() {
                     file={file}
                     decision={decisions[file.id]}
                     status={status}
+                    onCategoryChange={(category) => updateFileCategory(file.id, category)}
                     onApprove={() =>
                       setDecisions((prev) => ({
                         ...prev,
@@ -567,7 +654,7 @@ export default function App() {
           </div>
 
           {/* Bottom bar */}
-          {status === "review" && (
+          {view === "organize" && status === "review" && (
             <div style={{
               background: "var(--surface)", borderTop: "1px solid var(--border)",
               padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0,
@@ -605,12 +692,14 @@ function FileRow({
   file,
   decision,
   status,
+  onCategoryChange,
   onApprove,
   onReject,
 }: {
   file: FileResult;
   decision: "approved" | "rejected" | null | undefined;
   status: Status;
+  onCategoryChange: (category: Category) => void;
   onApprove: () => void;
   onReject: () => void;
 }) {
@@ -636,12 +725,28 @@ function FileRow({
           {file.type === "folder" ? "Folder" : file.ext?.toUpperCase() || "FILE"}
         </span>
 
-        <span
-          className="category-badge"
-          style={{ background: colors.bg, color: colors.text }}
-        >
-          {file.category}
-        </span>
+        {showActions ? (
+          <select
+            className="category-select"
+            value={file.category}
+            onChange={(event) => onCategoryChange(event.target.value as Category)}
+            style={{ background: colors.bg, color: colors.text }}
+            title="Change destination category"
+          >
+            {CATEGORIES.filter((category) => category !== "All").map((category) => (
+              <option key={category} value={category}>
+                {category}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span
+            className="category-badge"
+            style={{ background: colors.bg, color: colors.text }}
+          >
+            {file.category}
+          </span>
+        )}
 
         <span
           className={
@@ -676,5 +781,165 @@ function FileRow({
         </div>
       )}
     </div>
+  );
+}
+
+function SettingsPage({
+  settings,
+  onChange,
+}: {
+  settings: SortlySettings;
+  onChange: React.Dispatch<React.SetStateAction<SortlySettings>>;
+}) {
+  return (
+    <section className="settings-panel">
+      <div className="settings-header">
+        <h2>Settings</h2>
+        <p>Choose how Sortly prepares items before you review and move them.</p>
+      </div>
+
+      <SettingGroup
+        title="Default action"
+        description="Choose whether scanned items wait for review or start approved."
+      >
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="default-action"
+            checked={settings.defaultAction === "ask"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                defaultAction: "ask",
+              }))
+            }
+          />
+          <span>
+            <strong>Ask before moving</strong>
+            <small>Review each scan before any move is applied.</small>
+          </span>
+        </label>
+
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="default-action"
+            checked={settings.defaultAction === "auto"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                defaultAction: "auto",
+              }))
+            }
+          />
+          <span>
+            <strong>Auto-approve all after scan</strong>
+            <small>All scanned items start approved, but you can still skip individual rows.</small>
+          </span>
+        </label>
+      </SettingGroup>
+
+      <SettingGroup
+        title="Sorting mode"
+        description="Choose whether folders should be included in scans."
+      >
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="sorting-mode"
+            checked={settings.sortingMode === "files"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                sortingMode: "files",
+              }))
+            }
+          />
+          <span>
+            <strong>Sort files only</strong>
+            <small>Folders stay where they are.</small>
+          </span>
+        </label>
+
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="sorting-mode"
+            checked={settings.sortingMode === "filesAndFolders"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                sortingMode: "filesAndFolders",
+              }))
+            }
+          />
+          <span>
+            <strong>Sort files and folders</strong>
+            <small>Top-level folders are included and moved into Folders.</small>
+          </span>
+        </label>
+      </SettingGroup>
+
+      <SettingGroup
+        title="Unknown files"
+        description="Choose the destination for extensions Sortly does not recognize."
+      >
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="unknown-files"
+            checked={settings.unknownFiles === "other"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                unknownFiles: "other",
+              }))
+            }
+          />
+          <span>
+            <strong>Move to Other</strong>
+            <small>Unknown files use the normal Other category.</small>
+          </span>
+        </label>
+
+        <label className="setting-option">
+          <input
+            type="radio"
+            name="unknown-files"
+            checked={settings.unknownFiles === "unsorted"}
+            onChange={() =>
+              onChange((prev) => ({
+                ...prev,
+                unknownFiles: "unsorted",
+              }))
+            }
+          />
+          <span>
+            <strong>Move to _unsorted</strong>
+            <small>Unknown files go to a separate _unsorted folder.</small>
+          </span>
+        </label>
+      </SettingGroup>
+    </section>
+  );
+}
+
+function SettingGroup({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="settings-group">
+      <div>
+        <h3>{title}</h3>
+        <p>{description}</p>
+      </div>
+      <div className="settings-options">{children}</div>
+    </section>
   );
 }

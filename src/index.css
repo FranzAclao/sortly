@@ -75,6 +75,12 @@ button.success {
 }
 button.success:hover:not(:disabled) { background: #dcfce7; }
 
+button.top-nav-active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
 input[type="text"] {
   font-family: inherit;
   font-size: 13px;
@@ -224,6 +230,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 
 .file-type,
 .category-badge,
+.category-select,
 .confidence,
 .file-size {
   display: inline-flex;
@@ -235,6 +242,17 @@ input[type="text"]:focus { border-color: var(--accent); }
   font-weight: 700;
   border: 1px solid var(--border);
   background: #fff;
+}
+
+.category-select {
+  appearance: none;
+  min-width: 104px;
+  cursor: pointer;
+  outline: none;
+}
+
+.category-select:focus {
+  border-color: var(--accent);
 }
 
 .confidence.good {
@@ -276,6 +294,86 @@ input[type="text"]:focus { border-color: var(--accent); }
   border-color: #fca5a5;
 }
 
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 780px;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.settings-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-group {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.settings-group h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.settings-group p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  cursor: pointer;
+}
+
+.setting-option:has(input:checked) {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.setting-option input {
+  margin-top: 2px;
+}
+
+.setting-option strong {
+  display: block;
+  font-size: 13px;
+}
+
+.setting-option small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (max-width: 840px) {
   .review-header {
     align-items: flex-start;
@@ -295,6 +393,10 @@ input[type="text"]:focus { border-color: var(--accent); }
     grid-column: 1 / -1;
     grid-row: 2;
     flex-wrap: wrap;
+  }
+
+  .settings-group {
+    grid-template-columns: 1fr;
   }
 }
 

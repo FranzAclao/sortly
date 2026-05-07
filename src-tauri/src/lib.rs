@@ -14,13 +14,21 @@ struct PythonEvent {
 }
 
 #[tauri::command]
-fn scan_folder(folder: String, app: AppHandle, state: State<PythonProcess>) -> Result<(), String> {
+fn scan_folder(
+    folder: String,
+    include_folders: Option<bool>,
+    unknown_target: Option<String>,
+    app: AppHandle,
+    state: State<PythonProcess>,
+) -> Result<(), String> {
     send_command(
         &state,
         &app,
         serde_json::json!({
             "action": "scan",
             "folder": folder,
+            "include_folders": include_folders.unwrap_or(true),
+            "unknown_target": unknown_target.unwrap_or_else(|| "Other".into()),
         }),
     )
 }
