@@ -58,6 +58,27 @@ fn undo_last(app: AppHandle, state: State<PythonProcess>) -> Result<(), String> 
     send_command(&state, &app, serde_json::json!({"action": "undo"}))
 }
 
+#[tauri::command]
+fn get_sort_history(app: AppHandle, state: State<PythonProcess>) -> Result<(), String> {
+    send_command(&state, &app, serde_json::json!({"action": "history"}))
+}
+
+#[tauri::command]
+fn restore_sort_history(
+    index: usize,
+    app: AppHandle,
+    state: State<PythonProcess>,
+) -> Result<(), String> {
+    send_command(
+        &state,
+        &app,
+        serde_json::json!({
+            "action": "restore_history",
+            "index": index,
+        }),
+    )
+}
+
 fn send_command(state: &State<PythonProcess>, _app: &AppHandle, cmd: Value) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(child) = guard.as_mut() {
@@ -107,6 +128,8 @@ pub fn run() {
             scan_folder,
             apply_moves,
             undo_last,
+            get_sort_history,
+            restore_sort_history,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

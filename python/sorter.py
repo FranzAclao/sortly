@@ -115,6 +115,56 @@ def emit(event: str, data: dict):
     payload = json.dumps({"event": event, "data": data})
     print(payload, flush=True)
 
+def read_undo_log():
+    if not UNDO_LOG.exists():
+        return []
+    try:
+        log = json.loads(UNDO_LOG.read_text())
+        return log if isinstance(log, list) else []
+    except Exception:
+        return []
+
+def write_undo_log(log):
+    UNDO_LOG.write_text(json.dumps(log, indent=2))
+
+def infer_history_folder(entry):
+    if entry.get("folder"):
+        return entry["folder"]
+
+    moves = entry.get("moves", [])
+    parents = []
+    for move in moves:
+        original = move.get("to")
+        if original:
+            parents.append(str(Path(original).parent))
+
+    if not parents:
+        return ""
+
+    try:
+        return os.path.commonpath(parents)
+    except Exception:
+        return parents[0]
+
+def summarize_history_entry(index, entry):
+    moves = entry.get("moves", [])
+    return {
+        "id": index,
+        "timestamp": entry.get("timestamp", ""),
+        "folder": infer_history_folder(entry),
+        "moved": entry.get("moved", len(moves)),
+    }
+
+def emit_history():
+    log = read_undo_log()
+    entries = [
+        summarize_history_entry(index, entry)
+        for index, entry in enumerate(log)
+        if entry.get("moves")
+    ]
+    entries.reverse()
+    emit("history_loaded", {"entries": entries})
+
 def is_sortable_item(root_folder: Path, name: str, include_folders: bool) -> bool:
     path = root_folder / name
 
@@ -244,17 +294,14 @@ def apply_moves(folder: str, approved_ids: list[int], files: list[dict]):
             emit("move_error", {"name": src.name, "error": str(e)})
 
     try:
-        log = []
-        if UNDO_LOG.exists():
-            try:
-                log = json.loads(UNDO_LOG.read_text())
-            except Exception:
-                log = []
+        log = read_undo_log()
         log.append({
             "timestamp": datetime.datetime.now().isoformat(),
+            "folder": str(root),
+            "moved": moved,
             "moves": undo_entries,
         })
-        UNDO_LOG.write_text(json.dumps(log, indent=2))
+        write_undo_log(log)
     except Exception as e:
         errors.append({
             "name": "Undo log",
@@ -269,23 +316,45 @@ def undo_last():
         emit("error", {"message": "No undo history found."})
         return
     try:
-        log = json.loads(UNDO_LOG.read_text())
+        log = read_undo_log()
         if not log:
             emit("error", {"message": "Undo log is empty."})
             return
-        last = log.pop()
-        restored = 0
-        for entry in last["moves"]:
-            src = Path(entry["from"])
-            dst = Path(entry["to"])
-            if src.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst))
-                restored += 1
-        UNDO_LOG.write_text(json.dumps(log, indent=2))
+        last_index = len(log) - 1
+        restored = restore_history_entry(log, last_index)
+        write_undo_log(log)
         emit("undo_complete", {"restored": restored})
+        emit_history()
     except Exception as e:
         emit("error", {"message": f"Undo failed: {e}"})
+
+def restore_history_entry(log, index):
+    entry = log.pop(index)
+    restored = 0
+
+    for move in entry.get("moves", []):
+        src = Path(move["from"])
+        dst = Path(move["to"])
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            restored += 1
+
+    return restored
+
+def restore_history(index: int):
+    try:
+        log = read_undo_log()
+        if index < 0 or index >= len(log):
+            emit("error", {"message": "Sort history entry not found."})
+            return
+
+        restored = restore_history_entry(log, index)
+        write_undo_log(log)
+        emit("history_restored", {"restored": restored})
+        emit_history()
+    except Exception as e:
+        emit("error", {"message": f"Restore failed: {e}"})
 
 def get_size(path: Path):
     if path.is_dir():
@@ -321,6 +390,10 @@ def main():
                 apply_moves(cmd["folder"], cmd["approved_ids"], cmd["files"])
             elif action == "undo":
                 undo_last()
+            elif action == "history":
+                emit_history()
+            elif action == "restore_history":
+                restore_history(int(cmd["index"]))
             else:
                 emit("error", {"message": f"Unknown action: {action}"})
         except json.JSONDecodeError as e:
