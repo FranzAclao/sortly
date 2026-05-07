@@ -45,6 +45,14 @@ type SortHistoryEntry = {
   folder: string;
   moved: number;
 };
+type MovePreview = {
+  id: number;
+  name: string;
+  category: Category;
+  from: string;
+  to: string;
+  type?: "file" | "folder";
+};
 
 interface SortlySettings {
   defaultAction: DefaultAction;
@@ -145,6 +153,8 @@ export default function App() {
   const [activeFilter, setActiveFilter] = useState<CategoryFilter>("All");
   const [movedCount, setMovedCount] = useState(0);
   const [moveErrors, setMoveErrors] = useState<MoveError[]>([]);
+  const [movePreviews, setMovePreviews] = useState<MovePreview[]>([]);
+  const [showMovePreview, setShowMovePreview] = useState(false);
   const [historyEntries, setHistoryEntries] = useState<SortHistoryEntry[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const expectedMoveCount = useRef(0);
@@ -233,6 +243,8 @@ export default function App() {
 
         setMovedCount(payload.moved);
         setMoveErrors(payload.errors ?? []);
+        setMovePreviews([]);
+        setShowMovePreview(false);
         setStatus("done");
         showToast(`${payload.moved} items moved successfully`);
         void loadSortHistory();
@@ -260,6 +272,18 @@ export default function App() {
         };
 
         setHistoryEntries(payload.entries);
+      }));
+
+      track(await listen("move_preview", (event) => {
+        const payload = event.payload as {
+          previews: MovePreview[];
+        };
+
+        setMovePreviews(payload.previews);
+        setShowMovePreview(payload.previews.length > 0);
+        if (payload.previews.length === 0) {
+          showToast("No approved items to move");
+        }
       }));
 
       track(await listen("history_restored", (event) => {
@@ -308,6 +332,20 @@ export default function App() {
   const openHistory = () => {
     setView("history");
     void loadSortHistory();
+  };
+
+  const openSortedFolder = async () => {
+    if (!folder) {
+      showToast("No folder selected.");
+      return;
+    }
+
+    try {
+      await invoke("open_in_explorer", { folder });
+    } catch (error) {
+      console.error(error);
+      showToast(String(error));
+    }
   };
 
   const startScan = async () => {
@@ -361,10 +399,25 @@ export default function App() {
     );
   };
 
-  const applyMoves = async () => {
-    const approvedIds = files
+  const getApprovedIds = () =>
+    files
       .filter((f) => decisions[f.id] === "approved")
       .map((f) => f.id);
+
+  const previewMoves = async () => {
+    const approvedIds = getApprovedIds();
+
+    if (!folder || approvedIds.length === 0) return;
+
+    try {
+      await invoke("preview_moves", { folder, approvedIds, files });
+    } catch (e: any) {
+      showToast(`Error: ${e}`);
+    }
+  };
+
+  const applyMoves = async () => {
+    const approvedIds = getApprovedIds();
 
     if (!folder || approvedIds.length === 0) return;
 
@@ -372,6 +425,7 @@ export default function App() {
     setStatus("applying");
     setMovedCount(0);
     setMoveErrors([]);
+    setShowMovePreview(false);
 
     try {
       await invoke("apply_moves", { folder, approvedIds, files });
@@ -407,6 +461,8 @@ export default function App() {
     setScanTotal(0);
     setMovedCount(0);
     setMoveErrors([]);
+    setMovePreviews([]);
+    setShowMovePreview(false);
     expectedMoveCount.current = 0;
     setActiveFilter("All");
     setStatus("idle");
@@ -622,6 +678,7 @@ export default function App() {
 
                     <div className="review-actions">
                       <button onClick={undoLast}>Undo last sort</button>
+                      <button onClick={openSortedFolder}>Open in File Explorer</button>
                       <button onClick={resetForNewFolder}>Sort another folder</button>
                     </div>
                   </div>
@@ -647,7 +704,7 @@ export default function App() {
                         <button onClick={skipAll}>Skip all</button>
                         <button
                           className="primary"
-                          onClick={applyMoves}
+                          onClick={previewMoves}
                           disabled={approvedCount === 0}
                         >
                           Apply moves
@@ -742,6 +799,14 @@ export default function App() {
         }}>
           {toast}
         </div>
+      )}
+
+      {showMovePreview && (
+        <MovePreviewDialog
+          previews={movePreviews}
+          onCancel={() => setShowMovePreview(false)}
+          onConfirm={applyMoves}
+        />
       )}
     </div>
   );
@@ -841,6 +906,51 @@ function FileRow({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function MovePreviewDialog({
+  previews,
+  onCancel,
+  onConfirm,
+}: {
+  previews: MovePreview[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="move-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="move-preview-title">
+        <div className="move-preview-header">
+          <div>
+            <h2 id="move-preview-title">Confirm Moves</h2>
+            <p>{previews.length} items will be moved.</p>
+          </div>
+          <button onClick={onCancel}>Cancel</button>
+        </div>
+
+        <div className="move-preview-list">
+          {previews.map((preview) => (
+            <div className="move-preview-row" key={`${preview.id}-${preview.to}`}>
+              <div className="move-preview-name">{preview.name}</div>
+              <div className="move-preview-path">
+                <span>From:</span>
+                <code>{preview.from}</code>
+              </div>
+              <div className="move-preview-path">
+                <span>To:</span>
+                <code>{preview.to}</code>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="move-preview-footer">
+          <button onClick={onCancel}>Back to review</button>
+          <button className="primary" onClick={onConfirm}>Move items</button>
+        </div>
+      </section>
     </div>
   );
 }
