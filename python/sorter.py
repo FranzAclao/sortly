@@ -115,6 +115,21 @@ def emit(event: str, data: dict):
     payload = json.dumps({"event": event, "data": data})
     print(payload, flush=True)
 
+def get_unique_destination(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    parent = path.parent
+    stem = path.stem
+    suffix = path.suffix
+    counter = 1
+
+    while True:
+        candidate = parent / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
 def read_undo_log():
     if not UNDO_LOG.exists():
         return []
@@ -261,16 +276,7 @@ def apply_moves(folder: str, approved_ids: list[int], files: list[dict]):
         cat = file_info["category"]
         dest_dir = root / cat
         dest_dir.mkdir(exist_ok=True)
-        dest = dest_dir / src.name
-
-        # Handle name collision
-        if dest.exists():
-            stem = src.stem
-            suffix = src.suffix
-            counter = 1
-            while dest.exists():
-                dest = dest_dir / f"{stem}_{counter}{suffix}"
-                counter += 1
+        dest = get_unique_destination(dest_dir / src.name)
 
         try:
             source_abs = os.path.abspath(src)
@@ -336,8 +342,9 @@ def restore_history_entry(log, index):
         src = Path(move["from"])
         dst = Path(move["to"])
         if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dst))
+            restored_path = get_unique_destination(dst)
+            restored_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(restored_path))
             restored += 1
 
     return restored
